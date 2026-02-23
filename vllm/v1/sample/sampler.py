@@ -102,7 +102,8 @@ class Sampler(nn.Module):
         # return int32 (while PyTorch argmax and topk return int64).
         sampled = sampled.long()
 
-        if num_logprobs is None:
+        if num_logprobs is None or logprobs_mode == "all_raw_logits":
+            # If all raw logits are requested, we defer to 
             logprobs_tensors = None
         elif num_logprobs == -1:
             # Return the full unsorted and unranked logprobs.
@@ -126,6 +127,7 @@ class Sampler(nn.Module):
             sampled_token_ids=sampled.unsqueeze(-1),
             logprobs_tensors=logprobs_tensors,
         )
+
         return sampler_output
 
     @staticmethod

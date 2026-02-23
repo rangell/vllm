@@ -67,6 +67,8 @@ class Sampler:
         # Copy logits to a new FP32 tensor.
         logits = torch.empty_like(logits, dtype=torch.float32).copy_(logits)
 
+        print("logits", logits)
+
         # Apply penalties and temperature in place.
         apply_penalties_and_temperature(logits, sampling_metadata)
         # Apply min_p in place.

@@ -13,6 +13,7 @@ from vllm.lora.request import LoRARequest
 from vllm.multimodal.inputs import MultiModalFeatureSpec
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
+from vllm.steer_vectors.request import SteerVectorRequest
 from vllm.v1.metrics.stats import SchedulerStats
 from vllm.v1.outputs import LogprobsLists, LogprobsTensors
 from vllm.v1.serial_utils import UtilityResult
@@ -59,6 +60,7 @@ class EngineCoreRequest(
     eos_token_id: int | None
     arrival_time: float
     lora_request: LoRARequest | None
+    steer_vector_request: SteerVectorRequest | None
     cache_salt: str | None
     data_parallel_rank: int | None
     prompt_embeds: torch.Tensor | None = None
@@ -137,6 +139,9 @@ class EngineCoreOutput(
     # The number of NaNs in logits.
     # A value greater than 0 indicates that the output is corrupted.
     num_nans_in_logits: int = 0
+
+    # Raw logits for this step [vocab_size], when logprobs_mode is all_raw_logits.
+    all_raw_logits: torch.Tensor | None = None
 
     @property
     def finished(self) -> bool:

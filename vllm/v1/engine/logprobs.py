@@ -2,7 +2,9 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+import torch
 
 from vllm.logger import init_logger
 from vllm.logprobs import (
@@ -36,6 +38,9 @@ class LogprobsProcessor:
     cumulative_logprob: float | None
     num_logprobs: int | None
     num_prompt_logprobs: int | None
+
+    # Accumulated raw logits per generated token [vocab_size] each.
+    all_raw_logits_list: list[torch.Tensor] = field(default_factory=list)
 
     @classmethod
     def from_new_request(
@@ -187,3 +192,5 @@ class LogprobsProcessor:
             self._update_sample_logprobs(output.new_logprobs)
         if output.new_prompt_logprobs_tensors is not None:
             self._update_prompt_logprobs(output.new_prompt_logprobs_tensors)
+        if output.all_raw_logits is not None:
+            self.all_raw_logits_list.append(output.all_raw_logits)

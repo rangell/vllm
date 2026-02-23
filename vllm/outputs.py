@@ -46,6 +46,8 @@ class CompletionOutput:
     finish_reason: str | None = None
     stop_reason: int | str | None = None
     lora_request: LoRARequest | None = None
+    # Raw logits for each generated token in this completion; each tensor shape [vocab_size].
+    all_raw_logits: list[torch.Tensor] | None = None
 
     def finished(self) -> bool:
         return self.finish_reason is not None
@@ -103,6 +105,9 @@ class RequestOutput:
                                   None if decoder-only.
         num_cached_tokens: The number of tokens with prefix cache hit.
         kv_transfer_params: The params for remote K/V transfer.
+        all_raw_logits: Raw logits per generated token (when logprobs_mode is
+            all_raw_logits). List of length num_completions; each element is that
+            completion's list of tensors (each shape [vocab_size]) or None.
     """
 
     def __init__(
@@ -121,6 +126,7 @@ class RequestOutput:
         *,
         multi_modal_placeholders: MultiModalPlaceholderDict | None = None,
         kv_transfer_params: dict[str, Any] | None = None,
+        all_raw_logits: list[list[torch.Tensor] | None] | None = None,
         # Forward compatibility, code that uses args added in new release can
         # still run with older versions of vLLM without breaking.
         **kwargs: Any,
@@ -142,6 +148,12 @@ class RequestOutput:
         self.encoder_prompt_token_ids = encoder_prompt_token_ids
         self.num_cached_tokens = num_cached_tokens
         self.kv_transfer_params = kv_transfer_params
+        if all_raw_logits is not None:
+            self.all_raw_logits = all_raw_logits
+        elif outputs:
+            self.all_raw_logits = [o.all_raw_logits for o in outputs]
+        else:
+            self.all_raw_logits = None
 
     def add(self, next_output: "RequestOutput", aggregate: bool) -> None:
         """Merge subsequent RequestOutput into this one"""
@@ -161,6 +173,12 @@ class RequestOutput:
                         if next_completion.logprobs:
                             assert completion.logprobs is not None
                             completion.logprobs.extend(next_completion.logprobs)
+                        if next_completion.all_raw_logits:
+                            if completion.all_raw_logits is None:
+                                completion.all_raw_logits = []
+                            completion.all_raw_logits.extend(
+                                next_completion.all_raw_logits
+                            )
                         completion.cumulative_logprob = (
                             next_completion.cumulative_logprob
                         )
@@ -172,6 +190,11 @@ class RequestOutput:
                     break
             else:
                 self.outputs.append(next_completion)
+        # Keep all_raw_logits in sync with outputs after merge/append
+        if self.outputs:
+            self.all_raw_logits = [o.all_raw_logits for o in self.outputs]
+        else:
+            self.all_raw_logits = None
 
     def __repr__(self) -> str:
         return (

@@ -177,6 +177,9 @@ class ModelRunnerOutput:
     # information related to cudagraph execution
     cudagraph_stats: CUDAGraphStat | None = None
 
+    # [num_reqs, vocab_size]
+    all_raw_logits: torch.Tensor | None = None
+
 
 # ModelRunnerOutput wrapper for async scheduling.
 class AsyncModelRunnerOutput(ABC):
@@ -231,6 +234,7 @@ def make_empty_encoder_model_runner_output(
         kv_connector_output=None,
         ec_connector_output=None,
         num_nans_in_logits=None,
+        all_raw_logits=None,
     )
 
 
@@ -242,4 +246,5 @@ EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(
     prompt_logprobs_dict={},
     pooler_output=[],
     num_nans_in_logits=None,
+    all_raw_logits=None,
 )

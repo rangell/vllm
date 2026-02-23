@@ -320,6 +320,16 @@ class RequestState:
         if delta and logprobs:
             logprobs = logprobs[-len(token_ids) :]
 
+        # Prepare all_raw_logits: list of tensors, one per generation step [vocab_size] each
+        all_raw_logits = None
+        if self.logprobs_processor.all_raw_logits_list:
+            raw_list = [
+                t.cpu().clone() for t in self.logprobs_processor.all_raw_logits_list
+            ]
+            if delta:
+                raw_list = raw_list[-len(token_ids) :]
+            all_raw_logits = raw_list
+
         return CompletionOutput(
             index=self.request_index,
             text=text,
@@ -328,6 +338,7 @@ class RequestState:
             cumulative_logprob=self.logprobs_processor.cumulative_logprob,
             finish_reason=str(finish_reason) if finished else None,
             stop_reason=stop_reason if finished else None,
+            all_raw_logits=all_raw_logits,
         )
 
     def _new_pooling_output(

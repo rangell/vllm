@@ -71,6 +71,7 @@ class Scheduler(SchedulerInterface):
         self.scheduler_config = vllm_config.scheduler_config
         self.cache_config = vllm_config.cache_config
         self.lora_config = vllm_config.lora_config
+        self.steer_vector_config = vllm_config.steer_vector_config
         self.kv_cache_config = kv_cache_config
         self.kv_events_config = vllm_config.kv_events_config
         self.parallel_config = vllm_config.parallel_config
@@ -418,6 +419,16 @@ class Scheduler(SchedulerInterface):
             )
             assert len(scheduled_loras) <= self.lora_config.max_loras
 
+        # Record the SteerVectors in scheduled_running_reqs
+        scheduled_steer_vectors: set[int] = set()
+        if self.steer_vector_config:
+            scheduled_steer_vectors = set(
+                req.steer_vector_request.steer_vector_int_id
+                for req in scheduled_running_reqs
+                if req.steer_vector_request and req.steer_vector_request.steer_vector_int_id > 0
+            )
+            assert len(scheduled_steer_vectors) <= self.steer_vector_config.max_steer_vectors
+
         # Use a temporary RequestQueue to collect requests that need to be
         # skipped and put back at the head of the waiting queue later
         skipped_waiting_requests = create_request_queue(self.policy)
@@ -466,6 +477,21 @@ class Scheduler(SchedulerInterface):
                     )
                 ):
                     # Scheduling would exceed max_loras, skip.
+                    self.waiting.pop_request()
+                    skipped_waiting_requests.prepend_request(request)
+                    continue
+
+                # Check that adding the request still respects the max_steer_vectors
+                # constraint.
+                if (
+                    self.steer_vector_config
+                    and request.steer_vector_request
+                    and (
+                        len(scheduled_steer_vectors) == self.steer_vector_config.max_steer_vectors
+                        and request.steer_vector_request.steer_vector_int_id not in scheduled_steer_vectors
+                    )
+                ):
+                    # Scheduling would exceed max_steer_vectors, skip.
                     self.waiting.pop_request()
                     skipped_waiting_requests.prepend_request(request)
                     continue
@@ -631,6 +657,8 @@ class Scheduler(SchedulerInterface):
 
                 if self.lora_config and request.lora_request:
                     scheduled_loras.add(request.lora_request.lora_int_id)
+                if self.steer_vector_config and request.steer_vector_request:
+                    scheduled_steer_vectors.add(request.steer_vector_request.steer_vector_int_id)
                 req_to_new_blocks[request.request_id] = (
                     self.kv_cache_manager.get_blocks(request.request_id)
                 )
@@ -1065,6 +1093,7 @@ class Scheduler(SchedulerInterface):
         num_nans_in_logits = model_runner_output.num_nans_in_logits
         kv_connector_output = model_runner_output.kv_connector_output
         cudagraph_stats = model_runner_output.cudagraph_stats
+        all_raw_logits_batch = model_runner_output.all_raw_logits
 
         outputs: dict[int, list[EngineCoreOutput]] = defaultdict(list)
         spec_decoding_stats: SpecDecodingStats | None = None
@@ -1174,6 +1203,11 @@ class Scheduler(SchedulerInterface):
 
             # Get prompt logprobs for this request.
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
+            req_all_raw_logits = (
+                all_raw_logits_batch[req_index].clone()
+                if all_raw_logits_batch is not None
+                else None
+            )
             if new_token_ids or pooler_output is not None or kv_transfer_params:
                 # Add EngineCoreOutput for this Request.
                 outputs[request.client_index].append(
@@ -1190,6 +1224,7 @@ class Scheduler(SchedulerInterface):
                         trace_headers=request.trace_headers,
                         num_cached_tokens=request.num_cached_tokens,
                         num_nans_in_logits=request.num_nans_in_logits,
+                        all_raw_logits=req_all_raw_logits,
                     )
                 )
             else:
