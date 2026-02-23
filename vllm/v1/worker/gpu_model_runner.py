@@ -770,6 +770,8 @@ class GPUModelRunner(
         for req_id in scheduler_output.finished_req_ids:
             self.requests.pop(req_id, None)
             self.num_prompt_logprobs.pop(req_id, None)
+            if getattr(self, "_prompt_logprobs_in_progress", None) is not None:
+                self._prompt_logprobs_in_progress.pop(req_id, None)
         # Remove the finished requests from the persistent batch.
         # NOTE(woosuk): There could be an edge case where finished_req_ids and
         # scheduled_req_ids overlap. This happens when a request is aborted and
@@ -3848,6 +3850,11 @@ class GPUModelRunner(
         num_prompt_logprobs_dict = self.num_prompt_logprobs
         if not num_prompt_logprobs_dict:
             return {}
+
+        in_progress_dict = getattr(self, "_prompt_logprobs_in_progress", None)
+        if in_progress_dict is None:
+            self._prompt_logprobs_in_progress = {}
+            in_progress_dict = self._prompt_logprobs_in_progress
 
         prompt_logprobs_dict: dict[str, LogprobsTensors | None] = {}
 
