@@ -184,6 +184,12 @@ class SamplingParams(
     prompt_logprobs: int | None = None
     """Number of log probabilities to return per prompt token.
     When set to -1, return all `vocab_size` log probabilities."""
+    prompt_logprobs_include_rank: bool = True
+    """When True, compute and return vocab rank of the chosen token per prompt
+    position. Set to False to skip rank computation (faster)."""
+    prompt_logprobs_decode_tokens: bool = True
+    """When True, decode prompt logprob token IDs to strings. Set to False to
+    skip detokenization for prompt logprobs (faster)."""
     flat_logprobs: bool = False
     """Whether to return logprobs in flatten format (i.e. FlatLogprob)
     for better performance.

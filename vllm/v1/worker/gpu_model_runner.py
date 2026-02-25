@@ -2708,11 +2708,15 @@ class GPUModelRunner(
             else None
         )
 
-        # Compute prompt logprobs if needed.
+        # Compute prompt logprobs if needed (uses precomputed logits when fused).
+        precomputed_all_logits = getattr(self, "_fused_prompt_logits", None)
         prompt_logprobs_dict = self._get_prompt_logprobs_dict(
             hidden_states[:num_scheduled_tokens],
             scheduler_output.num_scheduled_tokens,
+            precomputed_all_logits=precomputed_all_logits,
         )
+        if precomputed_all_logits is not None:
+            self._fused_prompt_logits = None
 
         return (
             num_nans_in_logits,
@@ -3187,10 +3191,21 @@ class GPUModelRunner(
                     return output
 
                 sample_hidden_states = hidden_states[logits_indices]
-                logits = self.model.compute_logits(sample_hidden_states)
+                # When any request needs prompt logprobs, one compute_logits for the
+                # full batch avoids N separate all-gathers (one per request).
+                if self.num_prompt_logprobs:
+                    all_logits = self.model.compute_logits(
+                        hidden_states[:num_scheduled_tokens]
+                    )
+                    logits = all_logits[logits_indices]
+                    self._fused_prompt_logits = all_logits
+                else:
+                    logits = self.model.compute_logits(sample_hidden_states)
+                    self._fused_prompt_logits = None
             else:
-                # Rare case.
+                # Rare case (e.g. pipeline parallel broadcast).
                 assert not self.is_pooling_model
+                self._fused_prompt_logits = None
 
                 sample_hidden_states = hidden_states[logits_indices]
                 if not get_pp_group().is_last_rank:
@@ -3846,6 +3861,7 @@ class GPUModelRunner(
         self,
         hidden_states: torch.Tensor,
         num_scheduled_tokens: dict[str, int],
+        precomputed_all_logits: torch.Tensor | None = None,
     ) -> dict[str, LogprobsTensors | None]:
         num_prompt_logprobs_dict = self.num_prompt_logprobs
         if not num_prompt_logprobs_dict:
@@ -3910,13 +3926,14 @@ class GPUModelRunner(
                 # step. There are no more prompt logprobs to produce.
                 continue
 
-            # Get the logits corresponding to this req's prompt tokens.
-            # If this is a partial request (i.e. chunked prefill),
-            # then there is prompt logprob generated for each index.
+            # Get the logits for this req's prompt tokens (fused or per-request).
             req_idx = self.input_batch.req_id_to_index[req_id]
             offset = self.query_start_loc.np[req_idx].item()
-            prompt_hidden_states = hidden_states[offset : offset + num_logits]
-            logits = self.model.compute_logits(prompt_hidden_states)
+            if precomputed_all_logits is not None:
+                logits = precomputed_all_logits[offset : offset + num_logits]
+            else:
+                prompt_hidden_states = hidden_states[offset : offset + num_logits]
+                logits = self.model.compute_logits(prompt_hidden_states)
 
             # Get the "target" tokens for each index. For prompt at index i,
             # the token at prompt index i+1 is the "sampled" token we want
@@ -3925,8 +3942,11 @@ class GPUModelRunner(
 
             # Compute prompt logprobs.
             logprobs = self.sampler.compute_logprobs(logits)
+            include_rank = getattr(
+                request.sampling_params, "prompt_logprobs_include_rank", True
+            )
             token_ids, logprobs, ranks = self.sampler.gather_logprobs(
-                logprobs, num_prompt_logprobs, tgt_token_ids
+                logprobs, num_prompt_logprobs, tgt_token_ids, include_rank=include_rank
             )
 
             # Transfer GPU->CPU async.

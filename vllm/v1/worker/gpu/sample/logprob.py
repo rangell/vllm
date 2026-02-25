@@ -104,6 +104,7 @@ def compute_topk_logprobs(
     logits: torch.Tensor,
     num_logprobs: int,
     sampled_token_ids: torch.Tensor,
+    include_rank: bool = True,
 ) -> LogprobsTensors:
     assert num_logprobs >= 0
     batch_size, vocab_size = logits.shape
@@ -119,19 +120,24 @@ def compute_topk_logprobs(
     # logprobs tensor. Instead, we only compute and return the logprobs of
     # the topk + 1 tokens.
     logprobs = compute_token_logprobs(logits, logprob_token_ids)
-    token_ranks = torch.empty(
-        batch_size,
-        dtype=torch.int64,
-        device=logits.device,
-    )
-    _ranks_kernel[(batch_size,)](
-        token_ranks,
-        logits,
-        logits.stride(0),
-        sampled_token_ids,
-        vocab_size,
-        BLOCK_SIZE=8192,  # type: ignore
-    )
+    if include_rank:
+        token_ranks = torch.empty(
+            batch_size,
+            dtype=torch.int64,
+            device=logits.device,
+        )
+        _ranks_kernel[(batch_size,)](
+            token_ranks,
+            logits,
+            logits.stride(0),
+            sampled_token_ids,
+            vocab_size,
+            BLOCK_SIZE=8192,  # type: ignore
+        )
+    else:
+        token_ranks = torch.zeros(
+            batch_size, dtype=torch.int64, device=logits.device
+        )
     return LogprobsTensors(
         logprob_token_ids=logprob_token_ids,
         logprobs=logprobs,
@@ -143,14 +149,36 @@ def compute_prompt_logprobs(
     prompt_token_ids: torch.Tensor,
     prompt_hidden_states: torch.Tensor,
     logits_fn: Callable[[torch.Tensor], torch.Tensor],
+    precomputed_prompt_logits: torch.Tensor | None = None,
+    include_rank: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute logprobs and ranks for prompt tokens (chosen token only when num_logprobs=0).
+
+    When precomputed_prompt_logits is provided, use it instead of calling logits_fn
+    in chunks. This avoids redundant all-gathers when the caller already computed
+    logits for the full batch (e.g. fused with sampling logits).
+    When include_rank is False, ranks are not computed (zeros returned).
+    """
+    prompt_token_ids = prompt_token_ids.to(torch.int64)
+    n = prompt_token_ids.shape[0]
+
+    if precomputed_prompt_logits is not None:
+        # Single batch: use precomputed logits (no chunking, no extra all-gather).
+        assert precomputed_prompt_logits.shape[0] == n
+        prompt_logprobs = compute_topk_logprobs(
+            precomputed_prompt_logits,
+            0,  # num_logprobs
+            prompt_token_ids,
+            include_rank=include_rank,
+        )
+        return prompt_logprobs.logprobs, prompt_logprobs.selected_token_ranks
+
     # Since materializing the full prompt logits can take too much memory,
     # we compute it in chunks.
     CHUNK_SIZE = 1024
     logprobs = []
     ranks = []
-    prompt_token_ids = prompt_token_ids.to(torch.int64)
-    for start_idx in range(0, prompt_token_ids.shape[0], CHUNK_SIZE):
+    for start_idx in range(0, n, CHUNK_SIZE):
         end_idx = start_idx + CHUNK_SIZE
         # NOTE(woosuk): logits_fn can be slow because it involves all-gather.
         prompt_logits = logits_fn(prompt_hidden_states[start_idx:end_idx])
@@ -158,6 +186,7 @@ def compute_prompt_logprobs(
             prompt_logits,
             0,  # num_logprobs
             prompt_token_ids[start_idx:end_idx],
+            include_rank=include_rank,
         )
         logprobs.append(prompt_logprobs.logprobs)
         ranks.append(prompt_logprobs.selected_token_ranks)

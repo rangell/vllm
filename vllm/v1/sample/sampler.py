@@ -213,6 +213,7 @@ class Sampler(nn.Module):
         logprobs: torch.Tensor,
         num_logprobs: int,
         token_ids: torch.Tensor,
+        include_rank: bool = True,
     ) -> LogprobsTensors:
         """
         Gather logprobs for topk and sampled/prompt token.
@@ -226,6 +227,7 @@ class Sampler(nn.Module):
                      logprobs); 1D token ID tensor
                      with (num tokens) elements
                      Must be int64.
+          include_rank: when False, skip rank computation (return zeros).
 
         Returns:
           Top-k int indices tensor, (num tokens) x (num_logprobs + 1)
@@ -240,8 +242,14 @@ class Sampler(nn.Module):
         token_ids = token_ids.unsqueeze(-1)
         token_logprobs = logprobs.gather(-1, token_ids)
 
-        # Compute the ranks of the actual token.
-        token_ranks = batched_count_greater_than(logprobs, token_logprobs)
+        # Compute the ranks of the actual token (optional, can be slow).
+        if include_rank:
+            token_ranks = batched_count_greater_than(logprobs, token_logprobs)
+        else:
+            num_tokens = logprobs.shape[0]
+            token_ranks = torch.zeros(
+                num_tokens, dtype=torch.int64, device=logprobs.device
+            )
 
         # Concatenate together with the topk.
         indices = torch.cat((token_ids, topk_indices), dim=1)

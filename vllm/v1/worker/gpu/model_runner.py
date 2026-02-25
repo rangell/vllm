@@ -600,9 +600,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         input_batch: InputBatch,
         sampling_metadata: SamplingMetadata,
         grammar_output: GrammarOutput | None,
+        precomputed_sample_logits: torch.Tensor | None = None,
     ) -> tuple[SamplerOutput, torch.Tensor, torch.Tensor]:
-        sample_hidden_states = hidden_states[input_batch.logits_indices]
-        logits = self.model.compute_logits(sample_hidden_states)
+        if precomputed_sample_logits is not None:
+            logits = precomputed_sample_logits
+        else:
+            sample_hidden_states = hidden_states[input_batch.logits_indices]
+            logits = self.model.compute_logits(sample_hidden_states)
         if grammar_output is not None:
             # Apply grammar bitmask to the logits in-place.
             # TODO(woosuk): Make compatible with spec decoding.
@@ -615,9 +619,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     grammar_output.grammar_bitmask,
                     self.input_buffers,
                 )
-
-        print("here!")
-        exit()
 
         # Sample tokens and compute logprobs (if needed).
         sampler_output = self.sampler(logits, sampling_metadata)
@@ -653,6 +654,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self,
         hidden_states: torch.Tensor,
         input_batch: InputBatch,
+        precomputed_prompt_logits: torch.Tensor | None = None,
     ) -> dict[str, LogprobsTensors]:
         idx_mapping_np = input_batch.idx_mapping_np
         needs_prompt_logprobs = self.req_states.needs_prompt_logprobs[idx_mapping_np]
@@ -701,10 +703,20 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             token_ids[idx] = next_prompt_token
 
         # NOTE(woosuk): We mask out logprobs for negative tokens.
+        # When precomputed_prompt_logits is set, one compute_logits was already
+        # done for the full batch (fused with sampling), avoiding extra all-gathers.
+        include_rank = bool(
+            np.all(
+                self.req_states.prompt_logprobs_include_rank[idx_mapping_np]
+                | ~needs_prompt_logprobs
+            )
+        )
         prompt_logprobs, prompt_ranks = compute_prompt_logprobs(
             token_ids,
             hidden_states[:n],
             self.model.compute_logits,
+            precomputed_prompt_logits=precomputed_prompt_logits,
+            include_rank=include_rank,
         )
 
         prompt_token_ids = token_ids.unsqueeze(-1)
@@ -959,10 +971,42 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.execute_model_state = None  # type: ignore
         assert sampling_metadata is not None
 
-        sampler_output, num_sampled, num_rejected = self.sample(
-            hidden_states, input_batch, sampling_metadata, grammar_output
-        )
-        prompt_logprobs_dict = self.compute_prompt_logprobs(hidden_states, input_batch)
+        # Fused path: when prompt logprobs are needed, one compute_logits for the
+        # full batch avoids multiple all-gathers (chunked prompt logprobs).
+        idx_mapping_np = input_batch.idx_mapping_np
+        needs_prompt_logprobs = self.req_states.needs_prompt_logprobs[idx_mapping_np]
+        if np.any(needs_prompt_logprobs):
+            prompt_lens = self.req_states.prompt_len[idx_mapping_np]
+            computed_prefill = self.req_states.num_computed_prefill_tokens[
+                idx_mapping_np
+            ]
+            includes_prompt = computed_prefill < prompt_lens - 1
+            resumed_after_prompt = (
+                prompt_lens < self.req_states.prefill_len.np[idx_mapping_np]
+            )
+            needs_prompt_logprobs &= includes_prompt & ~resumed_after_prompt
+
+        if np.any(needs_prompt_logprobs):
+            n = input_batch.num_tokens
+            all_logits = self.model.compute_logits(hidden_states[:n])
+            sample_logits = all_logits[input_batch.logits_indices]
+            sampler_output, num_sampled, num_rejected = self.sample(
+                hidden_states,
+                input_batch,
+                sampling_metadata,
+                grammar_output,
+                precomputed_sample_logits=sample_logits,
+            )
+            prompt_logprobs_dict = self.compute_prompt_logprobs(
+                hidden_states, input_batch, precomputed_prompt_logits=all_logits
+            )
+        else:
+            sampler_output, num_sampled, num_rejected = self.sample(
+                hidden_states, input_batch, sampling_metadata, grammar_output
+            )
+            prompt_logprobs_dict = self.compute_prompt_logprobs(
+                hidden_states, input_batch
+            )
 
         # Prepare the model runner output.
         model_runner_output = ModelRunnerOutput(

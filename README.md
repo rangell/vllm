@@ -1,4 +1,6 @@
 <!-- markdownlint-disable MD001 MD041 -->
+
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
@@ -59,6 +61,34 @@ Join us at the [PyTorch Conference, October 22-23](https://events.linuxfoundatio
 - [2023/06] We officially released vLLM! FastChat-vLLM integration has powered [LMSYS Vicuna and Chatbot Arena](https://chat.lmsys.org) since mid-April. Check out our [blog post](https://vllm.ai).
 
 </details>
+
+---
+
+## Installing this custom fork
+
+Make sure that you have [`uv`](https://docs.astral.sh/uv/getting-started/installation/) installed. Then, run:
+
+```bash
+export SETUPTOOLS_SCM_PRETEND_VERSION=0.13.0
+export VLLM_PRECOMPILED_WHEEL_COMMIT=72506c98349d6bcd32b4e33eec7b5513453c1502
+export VLLM_PRECOMPILED_WHEEL_VARIANT="${VLLM_PRECOMPILED_WHEEL_VARIANT:-cu130}"
+export VLLM_USE_PRECOMPILED=1
+
+uv init
+uv pip install -e .
+source .venv/bin/activate
+```
+
+NOTE: You may need to change the cuda version depending on your specific GPU(s) from "cu130" to, for example, "cu129". 
+
+## Quickstart
+
+```python
+
+if __name__ == "__main__":
+    pass
+
+```
 
 ---
 

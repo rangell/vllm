@@ -97,6 +97,7 @@ class RequestState:
         # -1 means no logprobs are requested.
         self.num_logprobs.fill(-1)
         self.needs_prompt_logprobs = np.zeros(self.max_num_reqs, dtype=bool)
+        self.prompt_logprobs_include_rank = np.ones(self.max_num_reqs, dtype=bool)
 
         # Statistics for penalties.
         self.prompt_bin_mask = torch.zeros(
@@ -192,6 +193,9 @@ class RequestState:
         # For now, only support prompt logprobs for the prompt tokens.
         needs_prompt_logprobs = sampling_params.prompt_logprobs is not None
         self.needs_prompt_logprobs[req_idx] = needs_prompt_logprobs
+        self.prompt_logprobs_include_rank[req_idx] = getattr(
+            sampling_params, "prompt_logprobs_include_rank", True
+        )
 
     def remove_request(self, req_id: str) -> None:
         self.extra_data.pop(req_id, None)

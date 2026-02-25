@@ -39,6 +39,10 @@ class LogprobsProcessor:
     num_logprobs: int | None
     num_prompt_logprobs: int | None
 
+    # Prompt logprobs options (from sampling_params)
+    prompt_logprobs_include_rank: bool = True
+    prompt_logprobs_decode_tokens: bool = True
+
     # Accumulated raw logits per generated token [vocab_size] each.
     all_raw_logits_list: list[torch.Tensor] = field(default_factory=list)
 
@@ -67,6 +71,12 @@ class LogprobsProcessor:
             ),
             num_prompt_logprobs=num_prompt_logprobs,
             num_logprobs=num_logprobs,
+            prompt_logprobs_include_rank=getattr(
+                sampling_params, "prompt_logprobs_include_rank", True
+            ),
+            prompt_logprobs_decode_tokens=getattr(
+                sampling_params, "prompt_logprobs_decode_tokens", True
+            ),
         )
 
     def _update_sample_logprobs(self, logprobs_lists: LogprobsLists) -> None:
@@ -131,15 +141,13 @@ class LogprobsProcessor:
 
         token_ids, logprobs, ranks = prompt_logprobs_tensors
 
-        # Detokenize non-incrementally.
-        # Output is flat: [num_tok, num_lps] -> [num_tok * num_lps]
-        decoded_tokens = (
-            None
-            if self.tokenizer is None
-            else (
-                convert_ids_list_to_tokens(self.tokenizer, token_ids.flatten().tolist())
+        # Detokenize non-incrementally (optional; skip when disabled for speed).
+        if self.tokenizer is None or not self.prompt_logprobs_decode_tokens:
+            decoded_tokens = None
+        else:
+            decoded_tokens = convert_ids_list_to_tokens(
+                self.tokenizer, token_ids.flatten().tolist()
             )
-        )
 
         # Recover shapes.
         num_prompt_tokens, num_logprobs = logprobs.shape
@@ -157,6 +165,9 @@ class LogprobsProcessor:
             decoded_tokens_for_pos = (
                 NONES if decoded_tokens is None else decoded_tokens[offset:offset_end]
             )
+            rank_val = (
+                prompt_token_ranks[pos] if self.prompt_logprobs_include_rank else 0
+            )
 
             # Update with the Logprob container for this pos.
             append_logprobs_for_next_position(
@@ -164,7 +175,7 @@ class LogprobsProcessor:
                 token_ids[pos],
                 prompt_logprobs[pos],
                 decoded_tokens_for_pos,
-                prompt_token_ranks[pos],
+                rank_val,
                 self.num_prompt_logprobs,
             )
 
