@@ -13,8 +13,6 @@ llm = LLM(
     enforce_eager=True,  # Keep this `True` for steering vectors (maybe this is not needed?)
     enable_chunked_prefill=True,
     max_model_len=2000,
-    # max_num_batched_tokens and max_num_seqs are auto-set from GPU memory if omitted
-    # (LLM class: 8192 tokens / 256 seqs typically; H100/MI300x: 16384 / 1024).
     tensor_parallel_size=1,
     max_logprobs=-1,  # Allow all logprobs (no cap) - needed for logprobs=-1
     logprobs_mode="all_raw_logits",  # Return full raw logits for all generated positions
